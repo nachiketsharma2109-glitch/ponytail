@@ -44,8 +44,8 @@ function writeMode(mode) {
 }
 
 export default async ({ client } = {}) => {
-  const log = (level, message) => {
-    try { client && client.app && client.app.log({ body: { service: 'ponytail', level, message } }); } catch (e) {}
+  const log = async (level, message) => {
+    try { client && client.app && await client.app.log({ body: { service: 'ponytail', level, message } }); } catch (e) {}
   };
 
   const ponytailSkillsDir = path.resolve(__dirname, '../../skills');
