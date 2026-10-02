@@ -10,8 +10,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
 const HOOKS_JSON = 'hooks/claude-codex-hooks.json';
@@ -111,4 +112,43 @@ test('Claude and Codex manifests point at the shared host-specific hook config',
     const manifest = JSON.parse(fs.readFileSync(path.join(root, rel), 'utf8'));
     assert.equal(manifest.hooks, `./${HOOKS_JSON}`, `${rel} must not rely on root hooks auto-discovery`);
   }
+});
+
+test('lifecycle hooks exit quietly when the host closes stdout', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ponytail-stdout-'));
+  const env = { ...process.env, HOME: home, USERPROFILE: home,
+    CLAUDE_CONFIG_DIR: path.join(home, '.claude'), XDG_CONFIG_HOME: path.join(home, '.config'),
+    PONYTAIL_DEFAULT_MODE: 'full' };
+  for (const key of ['PLUGIN_DATA', 'COPILOT_PLUGIN_DATA', 'CLAUDE_PLUGIN_ROOT', 'QODER_SESSION_ID', 'CURSOR_VERSION']) delete env[key];
+  try {
+    for (const script of ['ponytail-activate.js', 'ponytail-mode-tracker.js']) {
+      const hook = path.join(root, 'hooks', script);
+      const input = JSON.stringify({ prompt: '/ponytail lite' });
+      const normal = spawnSync(process.execPath, [hook], { env, input, encoding: 'utf8', timeout: 3000 });
+      assert.equal(normal.status, 0, normal.stderr);
+      assert.match(normal.stdout, /PONYTAIL MODE (ACTIVE|CHANGED)/);
+
+      const child = spawn(process.execPath, [hook], { env, timeout: 3000 });
+      let stderr = '';
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.stdout.destroy();
+      child.stdin.end(input);
+      const code = await new Promise((resolve, reject) => {
+        child.on('close', resolve);
+        child.on('error', reject);
+      });
+      assert.equal(code, 0, `${script}: ${stderr}`);
+      assert.equal(stderr, '', 'a closed output pipe must not surface as a hook failure');
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('hook stdout errors other than EPIPE remain visible', () => {
+  const result = spawnSync(process.execPath, ['-e',
+    `require(${JSON.stringify(path.join(root, 'hooks', 'ponytail-runtime.js'))}); process.stdout.emit('error', Object.assign(new Error('output failed'), { code: 'ENOSPC' }));`,
+  ], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /ENOSPC/);
 });
